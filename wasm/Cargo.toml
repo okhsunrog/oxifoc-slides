@@ -1,0 +1,30 @@
+[package]
+name = "oxifoc-sim"
+version = "0.1.0"
+edition = "2024"
+description = "oxifoc FocDriver + VirtualMotor closed loop, compiled to WASM for the slides"
+
+[lib]
+# rlib: the native `cargo test` harness exercises the same loop.
+crate-type = ["cdylib", "rlib"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+
+[dependencies]
+console_error_panic_hook = "0.1.7"
+js-sys = "0.3.106"
+oxifoc-core = { version = "0.1.0", default-features = false, features = [
+  "algorithms",
+  "storage",
+  "virtual-motor",
+], git = "https://github.com/okhsunrog/oxifoc", rev = "ba028f6" }
+wasm-bindgen = "0.2.129"
+
+# For local oxifoc development, point the git dependency at the checkout
+# (the wasm:build task already runs uncached):
+#
+# [patch."https://github.com/okhsunrog/oxifoc"]
+# oxifoc-core = { path = "../../../rust/oxifoc/oxifoc-core" }

@@ -1,0 +1,6 @@
+node_modules
+dist
+.slidev
+*.local
+wasm/target
+wasm/pkg
