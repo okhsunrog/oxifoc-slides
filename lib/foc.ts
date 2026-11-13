@@ -1,8 +1,6 @@
-import init, { FocSim, sampleFields } from "../wasm/pkg/oxifoc_sim.js";
+import init, { FocSim, focHz, sampleFields } from "../wasm/pkg/oxifoc_sim.js";
 
 export { FocSim };
-
-export const FOC_HZ = 20_000;
 
 /** Field order of `sim::Sample::write` in wasm/src/sim.rs. */
 const KEYS = [
@@ -24,19 +22,23 @@ const KEYS = [
   "dutyB",
   "dutyC",
   "starting",
+  "targetIq",
 ] as const;
 
 export type Sample = Record<(typeof KEYS)[number], number>;
 
-let ready: Promise<unknown> | undefined;
+let ready: ReturnType<typeof init> | undefined;
 
-export async function createSim(sensorless: boolean): Promise<FocSim> {
-  ready ??= init();
+export async function initSim() {
+  ready ??= init().catch((error: unknown) => {
+    ready = undefined;
+    throw error;
+  });
   await ready;
   if (sampleFields() !== KEYS.length) {
     throw new Error(`wasm sample layout mismatch: ${sampleFields()} != ${KEYS.length}`);
   }
-  return new FocSim(sensorless);
+  return focHz();
 }
 
 /** Append the samples packed in `buf` to `out`; returns the last one. */

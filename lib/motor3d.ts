@@ -4,18 +4,16 @@ import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { POLES, SLOTS, WINDING, toothAzimuth, toothFlux } from "./winding";
 
 /**
- * Flipsky 5065 outrunner, modelled from photos: 50 × 65 mm can, rotating
- * bell + keyed shaft, fixed shaft-side flange with the cable exit. The
- * interior is the real 12N14P layout (see `winding.ts`), so the rotor and
- * the tooth glow can be driven straight from the simulation.
+ * Flipsky 5065 outrunner. The exterior follows the reference photos. The
+ * cutaway illustrates the 12N14P layout in `winding.ts`.
  */
 
 const TAU = Math.PI * 2;
 /** Tooth glow colours: north face / south face. */
 const NORTH = new T.Color(0xff5a36);
 const SOUTH = new T.Color(0x3d8bff);
-const MAGNET_NORTH = 0xb5796b;
-const MAGNET_SOUTH = 0x719aaf;
+const MAGNET_NORTH = 0x9e493b;
+const MAGNET_SOUTH = 0x315383;
 
 const metal = (color: number, roughness = 0.3, metalness = 0.8) =>
   new T.MeshStandardMaterial({ color, roughness, metalness });
@@ -41,15 +39,18 @@ export function createMotor() {
   root.add(rotor, stator);
   rotor.add(bell);
 
-  const black = metal(0x20262c, 0.32);
+  const black = metal(0x212932, 0.34, 0.66);
   const edge = metal(0x111820, 0.22);
-  const steel = metal(0xc3ccd2, 0.21, 0.95);
-  const iron = metal(0x606b77, 0.45);
-  const brass = metal(0xba9548, 0.24);
-  const copper = metal(0xdb7b3f, 0.28);
+  const steel = metal(0xaebbc7, 0.23, 0.92);
+  const iron = metal(0x515a64, 0.49, 0.65);
+  const laminatedIron = iron.clone();
+  laminatedIron.bumpMap = createMachiningFinish(34);
+  laminatedIron.bumpScale = 0.004;
+  const brass = metal(0xb68a45, 0.28);
+  const copper = metal(0xbc6639, 0.32, 0.65);
+  const insulation = metal(0x775044, 0.62, 0.15);
   const matte = (color: number) => metal(color, 0.7, 0.1);
-  /** Can surface: hidden in the cut-away view. */
-  const shellParts: T.Object3D[] = [];
+  const outlineParts: T.Mesh[] = [];
 
   function mesh(geometry: T.BufferGeometry, material: T.Material, parent: T.Object3D, y = 0) {
     const m = new T.Mesh(geometry, material);
@@ -66,7 +67,7 @@ export function createMotor() {
     parent: T.Object3D,
     y: number,
   ) {
-    return mesh(new T.CylinderGeometry(radius, radius, length, 96), material, parent, y);
+    return mesh(new T.CylinderGeometry(radius, radius, length, 64), material, parent, y);
   }
   /** Flat annulus of `height`, centred on `y`; optional 4 flange bores. */
   function ring(
@@ -97,64 +98,88 @@ export function createMotor() {
       bevelSize: 0.012,
       bevelThickness: 0.012,
       bevelSegments: 2,
-      curveSegments: 64,
+      curveSegments: 32,
     });
     geo.rotateX(Math.PI / 2);
     return mesh(geo, material, parent, y + height / 2);
   }
 
   // ── Rotating bell ─────────────────────────────────────────────────────
-  shellParts.push(
-    mesh(new T.CylinderGeometry(1.02, 1.02, 2.2, 128, 1, true), black, bell, -0.15),
-    mesh(
-      new T.CylinderGeometry(0.98, 0.98, 2.2, 128, 1, true),
-      new T.MeshStandardMaterial({
-        color: 0x111820,
-        roughness: 0.22,
-        metalness: 0.8,
-        side: T.BackSide,
-      }),
-      bell,
-      -0.15,
-    ),
+  const can = black.clone();
+  can.bumpMap = createMachiningFinish(64);
+  can.bumpScale = 0.003;
+  const shell = mesh(
+    revolved([
+      [0.977, -1.22],
+      [1.012, -1.22],
+      [1.025, -1.2],
+      [1.025, 0.88],
+      [1.018, 0.92],
+      [1.003, 0.945],
+      [0.977, 0.945],
+      [0.977, -1.22],
+    ]),
+    can,
+    bell,
   );
-  // Closed rear end (opposite the output shaft), fixed to the shaft.
-  cylinder(1.02, 0.16, black, bell, -1.28);
-  cylinder(0.25, 0.15, steel, bell, -1.19);
-  for (const side of [-1, 1]) {
-    mesh(new T.BoxGeometry(0.72, 0.008, 0.09), edge, bell, -1.363).position.x = side * 0.67;
-  }
-  ring(1.02, 0.96, 0.045, edge, bell, 0.96);
-  // Axial knurling on the can.
-  const grooves = new T.InstancedMesh(new T.BoxGeometry(0.009, 2.06, 0.006), edge, 72);
-  const placement = new T.Object3D();
-  for (let i = 0; i < 72; i++) {
-    const a = (i / 72) * TAU;
-    placement.position.set(Math.sin(a) * 1.023, -0.15, Math.cos(a) * 1.023);
-    placement.rotation.y = a;
-    placement.updateMatrix();
-    grooves.setMatrixAt(i, placement.matrix);
-  }
-  bell.add(grooves);
-  shellParts.push(grooves);
-  shellParts.push(createLabel(bell));
+  const rearCover = mesh(
+    revolved([
+      [0, -1.36],
+      [0.914, -1.36],
+      [0.992, -1.343],
+      [1.025, -1.305],
+      [1.025, -1.235],
+      [1.01, -1.22],
+      [0.982, -1.215],
+      [0.982, -1.16],
+      [0, -1.16],
+    ]),
+    black,
+    bell,
+  );
+  cylinder(0.31, 0.16, steel, bell, -1.12);
+  ring(0.975, 0.88, 0.08, iron, bell, -1.13);
+  const label = createLabel(bell);
+  outlineParts.push(shell, rearCover);
 
   // ── Shaft and bearing ─────────────────────────────────────────────────
   // Outer race stays in the flange; inner race turns with the shaft.
-  ring(0.32, 0.2, 0.065, steel, stator, 1.29);
-  ring(0.285, 0.21, 0.01, edge, stator, 1.328);
-  ring(0.205, 0.165, 0.065, steel, rotor, 1.29);
-  cylinder(0.165, 3.46, steel, rotor, 0.41);
-  ring(0.205, 0.166, 0.018, brass, rotor, 1.375);
+  ring(0.344, 0.273, 0.065, steel, stator, 1.29);
+  ring(0.277, 0.197, 0.026, edge, stator, 1.296);
+  ring(0.211, 0.165, 0.045, steel, rotor, 1.31);
+  const shaft = mesh(
+    revolved([
+      [0, -1.29],
+      [0.158, -1.29],
+      [0.174, -1.26],
+      [0.174, 1.27],
+      [0.165, 1.295],
+      [0.165, 1.39],
+      [0.174, 1.405],
+      [0.174, 2.3],
+      [0.159, 2.324],
+      [0, 2.324],
+    ]),
+    steel,
+    rotor,
+  );
+  ring(0.212, 0.167, 0.018, brass, rotor, 1.375);
   const clip = mesh(new T.TorusGeometry(0.19, 0.012, 6, 48, Math.PI * 1.8), steel, rotor, 1.397);
   clip.rotation.x = Math.PI / 2;
-  mesh(new T.BoxGeometry(0.075, 0.59, 0.014), edge, rotor, 1.79).position.z = 0.159;
+  const keyway = mesh(new T.BoxGeometry(0.065, 0.63, 0.012), edge, rotor, 1.83);
+  keyway.position.z = 0.166;
+  outlineParts.push(shaft, keyway);
 
   // ── Fixed flange, cable exit, leads ───────────────────────────────────
-  ring(1.02, 0.35, 0.36, black, stator, 1.16, true);
-  ring(0.35, 0.18, 0.12, black, stator, 1.2);
-  mesh(new T.BoxGeometry(0.34, 0.23, 0.49), matte(0x171e25), stator, 1.13).position.x = 1.09;
-  const leadColors = [0x47799f, 0x20262c, 0xe4b849];
+  outlineParts.push(ring(1.023, 0.35, 0.36, black, stator, 1.16, true));
+  ring(0.355, 0.18, 0.12, iron, stator, 1.23);
+  ring(1.014, 0.956, 0.027, edge, stator, 0.969);
+  const grommet = cylinder(0.168, 0.34, matte(0x141b21), stator, 1.1);
+  grommet.rotation.z = Math.PI / 2;
+  grommet.scale.x = 0.65;
+  grommet.position.x = 1.075;
+  const leadColors = [0xdf7b39, 0x506f98, 0xc4c6c5];
+  const cable = matte(0x1b2229);
   leadColors.forEach((color, i) => {
     const points = [
       new T.Vector3(1.18, 1.13, -0.14 + i * 0.14),
@@ -163,11 +188,12 @@ export function createMotor() {
       new T.Vector3(2.56 + i * 0.08, 0.48, 0.12 + i * 0.22),
     ];
     const end = points[3]!;
-    mesh(
+    const lead = mesh(
       new T.TubeGeometry(new T.CatmullRomCurve3(points), 32, 0.046, 10, false),
-      matte(0x171e25),
+      cable,
       stator,
     );
+    if (i === 1) outlineParts.push(lead);
     const connector = cylinder(0.06, 0.24, metal(color, 0.7, 0), stator, 0);
     connector.position.copy(end);
     connector.rotation.z = Math.PI / 2;
@@ -188,34 +214,41 @@ export function createMotor() {
     -0.22,
   );
 
-  // ── Stator: 12 wound teeth ────────────────────────────────────────────
-  ring(0.36, 0.18, 1.8, iron, stator, 0);
-  ring(0.29, 0.18, 0.22, black, stator, 0.96);
+  // ── Stator: laminations, slot insulation and 12 copper windings ──────
+  ring(0.36, 0.18, 1.58, iron, stator, 0.05);
+  for (const y of [-0.75, 0.85]) ring(0.42, 0.19, 0.035, insulation, stator, y);
+  ring(0.29, 0.18, 0.2, black, stator, 0.96);
   const coilGeometry = createCoil();
   const coilMaterials = WINDING.map(() => copper.clone());
+  const toothGeometry = createTooth();
   for (let k = 0; k < SLOTS; k++) {
     const tooth = new T.Group();
     tooth.rotation.y = toothAzimuth(k);
     stator.add(tooth);
-    mesh(new T.BoxGeometry(0.2, 1.62, 0.46), iron, tooth).position.z = 0.53;
-    mesh(new T.BoxGeometry(0.3, 1.66, 0.08), iron, tooth).position.z = 0.79;
+    mesh(toothGeometry, laminatedIron, tooth);
     mesh(coilGeometry, coilMaterials[k]!, tooth);
   }
 
   // ── Rotor: 14 magnets, N at even indices (electrical 0 at θm = 0) ────
   const magnets: T.Mesh[] = [];
+  const magnetShape = createMagnet();
+  const magnetMaterials = [metal(MAGNET_NORTH, 0.38, 0.4), metal(MAGNET_SOUTH, 0.38, 0.4)];
   for (let i = 0; i < POLES; i++) {
     const a = (i / POLES) * TAU;
-    const magnet = mesh(
-      new T.BoxGeometry(0.31, 1.84, 0.065),
-      metal(i % 2 ? MAGNET_SOUTH : MAGNET_NORTH, 0.36),
-      bell,
-      -0.15,
-    );
-    magnet.position.set(Math.sin(a) * 0.92, -0.15, Math.cos(a) * 0.92);
+    const magnet = mesh(magnetShape, magnetMaterials[i % 2]!, bell);
     magnet.rotation.y = a;
     magnet.userData.azimuth = a;
     magnets.push(magnet);
+  }
+
+  const outlineMaterial = new T.LineBasicMaterial({ color: 0x70caff, toneMapped: false });
+  const outlines = new Map<T.BufferGeometry, T.EdgesGeometry>();
+  for (const mesh of [...outlineParts, ...magnets]) {
+    const edges = outlines.get(mesh.geometry) ?? new T.EdgesGeometry(mesh.geometry, 18);
+    outlines.set(mesh.geometry, edges);
+    const lines = new T.LineSegments(edges, outlineMaterial);
+    lines.layers.set(1);
+    mesh.add(lines);
   }
 
   let open = false;
@@ -223,10 +256,15 @@ export function createMotor() {
     root,
     rotor,
     stator,
+    disposeOutlines() {
+      for (const edges of outlines.values()) edges.dispose();
+      outlineMaterial.dispose();
+    },
     /** Cut-away view: hide the can, reveal the stator. */
     setOpen(value: boolean) {
       open = value;
-      for (const part of shellParts) part.visible = !value;
+      shell.visible = !value;
+      label.visible = !value;
     },
     update({ angle, currents, cameraAzimuth, glowFullScale = 15 }: MotorState) {
       rotor.rotation.y = angle;
@@ -243,20 +281,94 @@ export function createMotor() {
   };
 }
 
-/** Eleven rounded turns around a radial tooth, merged into one geometry. */
+/** Radial/axial profile in the motor's Y-up frame. */
+function revolved(profile: ReadonlyArray<readonly [number, number]>) {
+  return new T.LatheGeometry(
+    profile.map(([radius, y]) => new T.Vector2(radius, y)),
+    96,
+  );
+}
+
+/** Periodic height map for machining marks and stacked steel sheets. */
+function createMachiningFinish(bands: number) {
+  const data = new Uint8Array(256);
+  for (let i = 0; i < data.length; i++) {
+    data[i] = Math.round(128 + 76 * Math.sin((i * TAU * bands) / data.length));
+  }
+  const texture = new T.DataTexture(data, 1, data.length, T.RedFormat);
+  texture.wrapT = T.RepeatWrapping;
+  texture.minFilter = T.LinearMipmapLinearFilter;
+  texture.magFilter = T.LinearFilter;
+  texture.generateMipmaps = true;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+/** One curved magnet with closed edges and a small bevel. */
+function createMagnet() {
+  const end = (TAU / POLES) * 0.4;
+  const shape = new T.Shape();
+  shape.absarc(0, 0, 0.968, Math.PI / 2 - end, Math.PI / 2 + end, false);
+  shape.lineTo(-Math.sin(end) * 0.915, Math.cos(end) * 0.915);
+  shape.absarc(0, 0, 0.915, Math.PI / 2 + end, Math.PI / 2 - end, true);
+  shape.closePath();
+  const geometry = new T.ExtrudeGeometry(shape, {
+    depth: 1.88,
+    bevelSize: 0.005,
+    bevelThickness: 0.02,
+    bevelSegments: 1,
+    curveSegments: 5,
+  });
+  geometry.rotateX(Math.PI / 2);
+  geometry.translate(0, 0.76, 0);
+  return geometry;
+}
+
+/** Stamp profile of a stator tooth, extruded along the shaft. */
+function createTooth() {
+  const shape = new T.Shape([
+    new T.Vector2(-0.088, 0.3),
+    new T.Vector2(0.088, 0.3),
+    new T.Vector2(0.101, 0.765),
+    new T.Vector2(0.118, 0.797),
+    new T.Vector2(0.132, 0.853),
+    new T.Vector2(0.111, 0.872),
+    new T.Vector2(-0.111, 0.872),
+    new T.Vector2(-0.132, 0.853),
+    new T.Vector2(-0.118, 0.797),
+    new T.Vector2(-0.101, 0.765),
+  ]);
+  const geometry = new T.ExtrudeGeometry(shape, {
+    depth: 1.52,
+    bevelSize: 0.009,
+    bevelThickness: 0.009,
+    bevelSegments: 1,
+  });
+  geometry.rotateX(Math.PI / 2);
+  geometry.translate(0, 0.81, 0);
+  const positions = geometry.getAttribute("position");
+  const uv = geometry.getAttribute("uv");
+  for (let i = 0; i < positions.count; i++) {
+    uv.setXY(i, uv.getX(i), (positions.getY(i) + 0.71) / 1.52);
+  }
+  return geometry;
+}
+
+/** Eleven illustrated turns around a radial tooth, merged into one geometry. */
 function createCoil() {
+  const segments = 24;
   const turns: T.BufferGeometry[] = [];
   for (let j = 0; j < 11; j++) {
-    const z = 0.36 + j * 0.037;
+    const z = 0.39 + j * 0.037;
     const points: T.Vector3[] = [];
-    for (let k = 0; k < 48; k++) {
-      const b = (k / 48) * TAU;
+    for (let k = 0; k < segments; k++) {
+      const b = (k / segments) * TAU;
       // Superellipse: a rounded rectangle hugging the tooth.
-      const x = 0.15 * Math.sign(Math.cos(b)) * Math.abs(Math.cos(b)) ** 0.35;
-      const y = 0.9 * Math.sign(Math.sin(b)) * Math.abs(Math.sin(b)) ** 0.35;
+      const x = 0.154 * Math.sign(Math.cos(b)) * Math.abs(Math.cos(b)) ** 0.45;
+      const y = 0.86 * Math.sign(Math.sin(b)) * Math.abs(Math.sin(b)) ** 0.45 + 0.05;
       points.push(new T.Vector3(x, y, z));
     }
-    turns.push(new T.TubeGeometry(new T.CatmullRomCurve3(points, true), 48, 0.018, 6, true));
+    turns.push(new T.TubeGeometry(new T.CatmullRomCurve3(points, true), segments, 0.018, 5, true));
   }
   const coil = mergeGeometries(turns)!;
   for (const turn of turns) turn.dispose();
@@ -266,15 +378,15 @@ function createCoil() {
 /** Curved "FLIPSKY 5065" print on the can, rendered to a canvas texture. */
 function createLabel(bell: T.Object3D) {
   const canvas = document.createElement("canvas");
-  canvas.width = 512;
+  canvas.width = 1024;
   canvas.height = 1024;
   const ctx = canvas.getContext("2d")!;
   // The print runs axially, from the shaft-side flange toward the closed end.
-  ctx.translate(canvas.width, 0);
+  ctx.translate(742, 0);
   ctx.rotate(Math.PI / 2);
-  ctx.fillStyle = "#d5d7cd";
+  ctx.fillStyle = "#e4dfca";
   ctx.textAlign = "center";
-  ctx.font = "700 190px Arial";
+  ctx.font = "800 178px Arial";
   ctx.fillText("FLIPSKY", 512, 160);
   ctx.font = "85px Arial";
   ctx.fillText("5065 / 270KV", 512, 245);
@@ -288,12 +400,12 @@ function createLabel(bell: T.Object3D) {
   const texture = new T.CanvasTexture(canvas);
   texture.colorSpace = T.SRGBColorSpace;
   const label = new T.Mesh(
-    new T.CylinderGeometry(1.027, 1.027, 1.95, 64, 1, true, -0.5, 1),
+    new T.CylinderGeometry(1.029, 1.029, 1.95, 48, 1, true, -0.29, 1.6),
     new T.MeshStandardMaterial({
       map: texture,
       transparent: true,
       roughness: 0.55,
-      metalness: 0.25,
+      metalness: 0.1,
       depthWrite: false,
       polygonOffset: true,
       polygonOffsetFactor: -1,

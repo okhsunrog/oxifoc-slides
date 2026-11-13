@@ -15,13 +15,13 @@ codegen-units = 1
 
 [dependencies]
 console_error_panic_hook = "0.1.7"
-js-sys = "0.3.106"
+js-sys = "0.3.107"
 oxifoc-core = { version = "0.1.0", default-features = false, features = [
   "algorithms",
   "storage",
   "virtual-motor",
-], git = "https://github.com/okhsunrog/oxifoc", rev = "ba028f6" }
-wasm-bindgen = "0.2.129"
+], git = "https://github.com/okhsunrog/oxifoc", rev = "8ec777dc6518b7e0adf5b8c6f452781a8ff33e2c" }
+wasm-bindgen = "0.2.130"
 
 # For local oxifoc development, point the git dependency at the checkout
 # (the wasm:build task already runs uncached):

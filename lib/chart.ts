@@ -49,7 +49,10 @@ export class StripChart {
     let peak = 0;
     for (const point of history) {
       if (point.time < now - window) continue;
-      for (const channel of this.channels) peak = Math.max(peak, Math.abs(point[channel.key]));
+      for (const channel of this.channels) {
+        const value = point[channel.key];
+        if (Number.isFinite(value)) peak = Math.max(peak, Math.abs(value));
+      }
     }
     // Grow at once, shrink only when the signal is well inside the range.
     const wanted = niceCeil(Math.max(this.minExtent, peak * 1.1));
@@ -94,7 +97,12 @@ export class StripChart {
       let started = false;
       for (const point of history) {
         if (point.time < now - window) continue;
-        const y = middle - point[channel.key] * scale;
+        const value = point[channel.key];
+        if (!Number.isFinite(value)) {
+          started = false;
+          continue;
+        }
+        const y = middle - value * scale;
         if (started) c.lineTo(x(point.time), y);
         else c.moveTo(x(point.time), y);
         started = true;

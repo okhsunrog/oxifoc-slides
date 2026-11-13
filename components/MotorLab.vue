@@ -1,31 +1,35 @@
 <script setup lang="ts">
-import { useIsSlideActive } from "@slidev/client";
 import * as T from "three";
-import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
-import { computed, onBeforeUnmount, onMounted, ref, useTemplateRef, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, useTemplateRef, watch } from "vue";
 
 import { StripChart, renderScale } from "../lib/chart";
-import { FOC_HZ, type FocSim, type Sample, createSim, unpack } from "../lib/foc";
+import { FocSim, type Sample, initSim, unpack } from "../lib/foc";
 import { createMotor } from "../lib/motor3d";
 
-/** Wall-clock seconds the strip charts span, whatever the time scale. */
-const CHART_WALL_S = 2.5;
+const CHART_WINDOW_S = 3.5;
+const DEMO_TIME_SCALE = 0.35;
+const BACKGROUND_TIME_SCALE = 0.035;
+const COMMAND_TIMES = [0, 0.35, 1.5, 2.6, CHART_WINDOW_S];
+const VELOCITY_RPM = [700, 1700, 1700, 700];
+const VELOCITY_LOAD_NM = [0, 0, 0.2, 0];
+const CURRENT_IQ = [2, 5, -4, 2];
+const CURRENT_LOAD_NM = 0.05;
 /** Aim for about this many points per chart window. */
 const CHART_POINTS = 800;
+const CHART_INTERVAL_MS = 1000 / 30;
 
-const active = useIsSlideActive();
-
-const targetRpm = ref(1500);
-const reverse = ref(false);
-const load = ref(0);
-const sensorless = ref(false);
-const timeScale = ref(0.02);
-const paused = ref(false);
-const interior = ref(false);
+const props = defineProps<{ demo: boolean; step: number; staticFrame: boolean }>();
+const interior = computed(() => props.demo && props.step >= 1);
+const showCharts = computed(() => props.demo && props.step >= 2);
+const currentMode = computed(() => props.demo && props.step >= 3);
+const stageTitle = computed(() =>
+  currentMode.value ? "Current Control" : showCharts.value ? "Velocity Control" : "Flipsky 5065",
+);
 const failed = ref("");
 
-const now = ref<Sample>();
+const now = shallowRef<Sample>();
+const focHz = ref(0);
 const history: Sample[] = [];
 
 const viewport = useTemplateRef<HTMLDivElement>("viewport");
@@ -33,28 +37,7 @@ const phasesCanvas = useTemplateRef<HTMLCanvasElement>("phases");
 const dqCanvas = useTemplateRef<HTMLCanvasElement>("dq");
 const speedCanvas = useTemplateRef<HTMLCanvasElement>("speed");
 
-let sim: FocSim | undefined;
-let pendingSteps = 0;
-
-function applyControls() {
-  if (!sim) return;
-  sim.setTargetRpm(reverse.value ? -targetRpm.value : targetRpm.value);
-  sim.setLoad(load.value);
-  sim.setSensorless(sensorless.value);
-}
-watch([targetRpm, reverse, load, sensorless], applyControls);
-
-/** Restart from standstill; `settleSeconds` of model time run up front. */
-async function reset(settleSeconds = 0) {
-  sim?.free();
-  sim = await createSim(sensorless.value);
-  history.length = 0;
-  pendingSteps = 0;
-  applyControls();
-  // `advance` runs at most one model second per call.
-  for (let s = 0; s < settleSeconds; s++) sim.advance(FOC_HZ, FOC_HZ);
-  now.value = undefined;
-}
+let disposed = false;
 
 const deg = (rad: number) => (rad * 180) / Math.PI;
 const wrap = (rad: number) => Math.atan2(Math.sin(rad), Math.cos(rad));
@@ -89,6 +72,7 @@ onMounted(async () => {
       [
         { key: "iq", color: "#168b79" },
         { key: "id", color: "#7965bd" },
+        { key: "targetIq", color: "#9aa7b2", dashed: true },
       ],
       2,
     ),
@@ -103,12 +87,13 @@ onMounted(async () => {
   ];
 
   try {
-    await reset(3);
+    focHz.value = await initSim();
   } catch (error) {
     console.error(error);
     failed.value = "Не удалось загрузить wasm-модуль";
     return;
   }
+  if (disposed) return;
 
   let renderer: T.WebGLRenderer;
   try {
@@ -125,15 +110,9 @@ onMounted(async () => {
   host.appendChild(renderer.domElement);
 
   const scene = new T.Scene();
-  const camera = new T.PerspectiveCamera(33, 1, 0.1, 60);
+  const camera = new T.PerspectiveCamera(31, 1, 0.1, 60);
   camera.position.set(5.6, 4.4, 9.2);
-  const controls = new OrbitControls(camera, renderer.domElement);
-  controls.target.set(0, 0.2, 0);
-  controls.enableDamping = true;
-  controls.enablePan = false;
-  controls.enableZoom = false;
-  controls.maxPolarAngle = Math.PI * 0.8;
-  controls.update();
+  camera.lookAt(0, 0.1, 0);
 
   const pmrem = new T.PMREMGenerator(renderer);
   const room = new RoomEnvironment();
@@ -143,10 +122,10 @@ onMounted(async () => {
   room.dispose();
   pmrem.dispose();
   scene.add(new T.HemisphereLight(0xe0edff, 0x647080, 2.1));
-  const key = new T.DirectionalLight(0xffffff, 4);
-  key.position.set(-3, 6, 5);
+  const key = new T.DirectionalLight(0xfff3e6, 3.5);
+  key.position.set(-3.5, 6, 5);
   key.castShadow = true;
-  key.shadow.mapSize.set(2048, 2048);
+  key.shadow.mapSize.set(1024, 1024);
   Object.assign(key.shadow.camera, { left: -5, right: 5, top: 6, bottom: -5 });
   key.shadow.normalBias = 0.025;
   scene.add(key);
@@ -159,270 +138,335 @@ onMounted(async () => {
   scene.add(motor.root);
   const ground = new T.Mesh(
     new T.PlaneGeometry(200, 200),
-    new T.ShadowMaterial({ color: 0x556678, opacity: 0.16 }),
+    new T.ShadowMaterial({ color: 0x556678, opacity: 0.11 }),
   );
   ground.rotation.x = -Math.PI / 2;
   ground.position.y = -1.85;
   ground.receiveShadow = true;
   scene.add(ground);
 
-  const resize = () => {
-    renderer.setPixelRatio(renderScale(host));
-    renderer.setSize(host.clientWidth, host.clientHeight, false);
-    camera.aspect = host.clientWidth / host.clientHeight;
-    camera.updateProjectionMatrix();
+  let renderedSize: [number, number, number] | undefined;
+  let sceneDirty = true;
+  let chartsDirty = true;
+  const invalidateScene = () => {
+    sceneDirty = true;
+    chartsDirty = true;
   };
+  renderer.domElement.addEventListener("webglcontextrestored", invalidateScene);
+  const resize = () => {
+    const width = host.clientWidth;
+    const height = host.clientHeight;
+    if (!width || !height) return;
+    const scale = renderScale(host);
+    if (renderedSize?.[0] === width && renderedSize[1] === height && renderedSize[2] === scale)
+      return;
+    renderedSize = [width, height, scale];
+    renderer.setDrawingBufferSize(width, height, scale);
+    camera.aspect = width / height;
+    camera.updateProjectionMatrix();
+    sceneDirty = true;
+    chartsDirty = true;
+  };
+  resize();
   const observer = new ResizeObserver(resize);
   observer.observe(host);
   // The slide's CSS scale changes without a layout resize (window resize,
   // presenter view) — re-check the render scale occasionally.
   const rescale = setInterval(resize, 1000);
 
-  const stopWatch = watch(interior, (open) => motor.setOpen(open), { immediate: true });
+  const sim = new FocSim(false);
+  sim.setTargetRpm(700);
+  for (let i = 0; i < 3; i++) sim.advance(focHz.value, focHz.value);
+  now.value = unpack(sim.sample(), history);
+  let pendingSteps = 0;
+  let previous: number | undefined;
+  let elapsedSteps = 0;
+  let command = -1;
+  let spread = 0;
+  const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
+  const commandEnds = COMMAND_TIMES.slice(1).map((seconds) => Math.round(seconds * focHz.value));
+  const decimate = Math.max(1, Math.round((CHART_WINDOW_S * focHz.value) / CHART_POINTS));
 
-  let previous = performance.now();
+  function applyCommand() {
+    const nextCommand = showCharts.value ? commandEnds.findIndex((end) => elapsedSteps < end) : 0;
+    if (command === nextCommand) return;
+    command = nextCommand;
+    if (currentMode.value) {
+      sim.setLoad(CURRENT_LOAD_NM);
+      sim.setTargetIq(CURRENT_IQ[command]!);
+    } else {
+      sim.setLoad(VELOCITY_LOAD_NM[command]!);
+      sim.setTargetRpm(VELOCITY_RPM[command]!);
+    }
+  }
+
+  const demoSteps = commandEnds.at(-1)!;
+  function advanceDemo(steps: number) {
+    let remaining = Math.min(steps, demoSteps - elapsedSteps);
+    while (remaining > 0) {
+      applyCommand();
+      const count = Math.min(remaining, focHz.value, commandEnds[command]! - elapsedSteps);
+      now.value = unpack(sim.advance(count, decimate), history) ?? now.value;
+      elapsedSteps += count;
+      remaining -= count;
+    }
+  }
+
+  const stopStage = watch(
+    [() => props.demo, () => props.step],
+    () => {
+      const outline = !props.demo;
+      camera.layers.set(outline ? 1 : 0);
+      renderer.shadowMap.enabled = !outline;
+      ground.visible = !outline;
+      motor.setOpen(interior.value);
+      elapsedSteps = 0;
+      command = -1;
+      history.length = 0;
+      pendingSteps = 0;
+      previous = undefined;
+      applyCommand();
+      now.value = unpack(sim.sample(), history);
+      if (props.staticFrame && showCharts.value) advanceDemo(demoSteps);
+      invalidateScene();
+    },
+    { immediate: true },
+  );
+  const resetClock = () => {
+    previous = undefined;
+  };
+  document.addEventListener("visibilitychange", resetClock);
+
+  let renderedSample: Sample | undefined;
+  let chartSample: Sample | undefined;
+  let renderedChartTick = -1;
   const frame = (wallTime: number) => {
-    // rAF timestamps can predate the performance.now() taken on slide enter.
-    const wallDt = Math.min(Math.max((wallTime - previous) / 1000, 0), 0.05);
+    // Catch up through ordinary frame drops, but bound each WASM batch to one second.
+    const wallDt = Math.min(Math.max((wallTime - (previous ?? wallTime)) / 1000, 0), 1);
     previous = wallTime;
-    const window = CHART_WALL_S * timeScale.value;
-    if (sim && !paused.value) {
-      pendingSteps += wallDt * timeScale.value * FOC_HZ;
-      const steps = Math.floor(pendingSteps);
-      pendingSteps -= steps;
-      const decimate = Math.max(1, Math.round((window * FOC_HZ) / CHART_POINTS));
-      const last = unpack(sim.advance(steps, decimate), history);
-      if (last) now.value = last;
-      else if (!now.value) unpack(sim.sample(), history);
-      const cutoff = (now.value?.time ?? 0) - window * 1.05;
-      let stale = 0;
-      while (stale < history.length && history[stale]!.time < cutoff) stale++;
-      history.splice(0, stale);
+    const timeScale = showCharts.value ? DEMO_TIME_SCALE : BACKGROUND_TIME_SCALE;
+    const chartTick = Math.floor(wallTime / CHART_INTERVAL_MS);
+    if (!props.staticFrame) pendingSteps += wallDt * timeScale * focHz.value;
+    if (props.demo || chartTick !== renderedChartTick) {
+      const steps = Math.min(focHz.value, Math.floor(pendingSteps));
+      if (steps) {
+        pendingSteps -= steps;
+        if (showCharts.value) {
+          advanceDemo(steps);
+        } else {
+          sim.advance(steps, steps + 1);
+          history.length = 0;
+          now.value = unpack(sim.sample(), history);
+        }
+      }
     }
     const s = now.value;
-    if (s) {
+    const desiredSpread = interior.value ? 0.9 : 0;
+    const nextSpread =
+      reducedMotion.matches || props.staticFrame || Math.abs(desiredSpread - spread) < 0.002
+        ? desiredSpread
+        : T.MathUtils.lerp(spread, desiredSpread, 1 - Math.exp(-8 * wallDt));
+    if (s && (sceneDirty || s !== renderedSample || nextSpread !== spread)) {
+      spread = nextSpread;
+      motor.rotor.position.y = -spread;
+      ground.position.y = -1.65 - spread;
       motor.update({
         angle: s.mechAngle,
         currents: [s.ia, s.ib, s.ic],
         cameraAzimuth: Math.atan2(camera.position.x, camera.position.z),
       });
-      for (const chart of charts) chart.draw(history, s.time, window);
+      renderer.render(scene, camera);
+      sceneDirty = false;
     }
-    controls.update();
-    renderer.render(scene, camera);
+    if (
+      showCharts.value &&
+      s &&
+      (chartsDirty || (s !== chartSample && chartTick !== renderedChartTick))
+    ) {
+      const windowEnd = history[0]!.time + CHART_WINDOW_S;
+      for (const chart of charts) chart.draw(history, windowEnd, CHART_WINDOW_S);
+      chartsDirty = false;
+      chartSample = s;
+    }
+    renderedChartTick = chartTick;
+    renderedSample = s;
   };
 
-  const stopActive = watch(
-    active,
-    (isActive) => {
-      previous = performance.now();
-      renderer.setAnimationLoop(isActive ? frame : null);
-    },
-    { immediate: true },
-  );
+  renderer.setAnimationLoop(frame);
 
   cleanup = () => {
-    stopActive();
-    stopWatch();
+    stopStage();
+    document.removeEventListener("visibilitychange", resetClock);
     clearInterval(rescale);
     observer.disconnect();
     renderer.setAnimationLoop(null);
-    controls.dispose();
+    renderer.domElement.removeEventListener("webglcontextrestored", invalidateScene);
     scene.traverse((object) => {
       if (object instanceof T.Mesh) {
         object.geometry.dispose();
         const materials = Array.isArray(object.material) ? object.material : [object.material];
         for (const material of materials) {
-          if (material instanceof T.MeshStandardMaterial) material.map?.dispose();
+          if (material instanceof T.MeshStandardMaterial) {
+            material.map?.dispose();
+            material.bumpMap?.dispose();
+          }
           material.dispose();
         }
       }
     });
+    motor.disposeOutlines();
     env.dispose();
     renderer.dispose();
     renderer.domElement.remove();
+    sim.free();
   };
 });
 
 onBeforeUnmount(() => {
+  disposed = true;
   cleanup();
-  sim?.free();
-  sim = undefined;
 });
 </script>
 
 <template>
-  <div class="lab">
-    <header>
-      <div class="title">
-        <b>oxifoc</b> FocDriver → wasm32
-        <span class="chip">20 kHz</span>
-        <span class="chip">60 KB</span>
-        <span class="chip">Flipsky 5065 · 24 V</span>
-      </div>
-      <div class="status" :class="{ warn: now?.starting }">
-        <i />
-        {{ now?.starting ? "cold start: open loop" : sensorless ? "observer locked" : "hall" }}
-      </div>
+  <div class="lab" :class="{ demo, 'show-charts': showCharts }">
+    <div ref="viewport" class="viewport" aria-hidden="true"></div>
+    <header v-if="demo">
+      <h1>{{ stageTitle }}</h1>
+      <p v-if="showCharts">
+        {{ currentMode ? "Задание тока Iq" : "Задание скорости и нагрузка на валу" }}
+      </p>
+      <p v-else>
+        {{ interior ? "Статор, обмотки и ротор" : "12 зубцов статора · 14 полюсов ротора" }}
+      </p>
     </header>
 
-    <div class="stage">
-      <div ref="viewport" class="viewport">
-        <div v-if="failed" class="failed">{{ failed }}</div>
-      </div>
-      <div class="dial">
-        <svg viewBox="0 0 120 120" aria-label="Электрический угол: ротор и оценка">
-          <circle cx="60" cy="60" r="50" class="ring" />
-          <line
-            v-for="(p, i) in hallSectors"
-            :key="i"
-            x1="60"
-            y1="60"
-            :x2="p.x"
-            :y2="p.y"
-            class="sector"
-          />
-          <line x1="60" y1="60" :x2="trueTip.x" :y2="trueTip.y" class="true" />
-          <line x1="60" y1="60" :x2="estTip.x" :y2="estTip.y" class="est" />
-          <circle cx="60" cy="60" r="3" class="hub" />
-        </svg>
-        <div class="dial-legend">
-          <span class="k-true">θ ротора</span>
-          <span class="k-est">θ̂ {{ sensorless ? "observer" : "hall" }}</span>
-          <span class="err">Δ {{ fmt(angleError, 1) }}°</span>
-        </div>
-      </div>
-      <button class="view-toggle" :class="{ on: interior }" @click="interior = !interior">
-        {{ interior ? "Корпус" : "Внутри" }}
-      </button>
-
-      <div class="signals">
-        <section>
-          <h3>
-            Фазные токи <span class="key" style="--c: #168b79">A</span
-            ><span class="key" style="--c: #cd8136">B</span
-            ><span class="key" style="--c: #7965bd">C</span>
-            <em>{{ fmt(now?.ia, 1) }} A</em>
-          </h3>
-          <canvas ref="phases" />
-        </section>
-        <section>
-          <h3>
-            dq <span class="key" style="--c: #168b79">Iq</span
-            ><span class="key" style="--c: #7965bd">Id</span>
-            <em>{{ fmt(now?.iq, 1) }} A</em>
-          </h3>
-          <canvas ref="dq" />
-        </section>
-        <section>
-          <h3>
-            Скорость <span class="key" style="--c: #426a9c">факт</span
-            ><span class="key dashed" style="--c: #9aa7b2">задание</span>
-            <em>{{ fmt(now?.rpm) }} rpm</em>
-          </h3>
-          <canvas ref="speed" />
-        </section>
-        <p class="window">окно {{ fmt(CHART_WALL_S * timeScale * 1000) }} мс модельного времени</p>
+    <div v-if="demo && failed" class="failed">{{ failed }}</div>
+    <div v-if="showCharts" class="dial">
+      <svg viewBox="0 0 120 120" aria-label="Электрический угол: ротор и оценка">
+        <circle cx="60" cy="60" r="50" class="ring" />
+        <line
+          v-for="(p, i) in hallSectors"
+          :key="i"
+          x1="60"
+          y1="60"
+          :x2="p.x"
+          :y2="p.y"
+          class="sector"
+        />
+        <line x1="60" y1="60" :x2="trueTip.x" :y2="trueTip.y" class="true" />
+        <line x1="60" y1="60" :x2="estTip.x" :y2="estTip.y" class="est" />
+        <circle cx="60" cy="60" r="3" class="hub" />
+      </svg>
+      <div class="dial-legend">
+        <span class="k-true">θ ротора</span>
+        <span class="k-est">θ̂ Hall</span>
+        <span class="err">Δ {{ fmt(angleError, 1) }}°</span>
       </div>
     </div>
-
-    <footer>
-      <button class="icon" :aria-label="paused ? 'Продолжить' : 'Пауза'" @click="paused = !paused">
-        {{ paused ? "▶" : "❚❚" }}
-      </button>
-      <label class="slider">
-        <span
-          >Задание <output>{{ reverse ? -targetRpm : targetRpm }} rpm</output></span
-        >
-        <input v-model.number="targetRpm" type="range" min="0" max="4000" step="50" />
-      </label>
-      <button :class="{ on: reverse }" @click="reverse = !reverse">↔ реверс</button>
-      <label class="slider">
-        <span
-          >Нагрузка <output>{{ load.toFixed(2) }} Н·м</output></span
-        >
-        <input v-model.number="load" type="range" min="0" max="0.6" step="0.02" />
-      </label>
-      <div class="segmented">
-        <button :class="{ on: !sensorless }" @click="sensorless = false">Hall</button>
-        <button :class="{ on: sensorless }" @click="sensorless = true">Sensorless</button>
-      </div>
-      <select v-model.number="timeScale" aria-label="Масштаб времени">
-        <option :value="1">×1</option>
-        <option :value="0.1">×0.1</option>
-        <option :value="0.02">×0.02</option>
-        <option :value="0.005">×0.005</option>
-      </select>
-      <button class="icon" aria-label="Сбросить" @click="reset()">↺</button>
-    </footer>
+    <div v-show="showCharts" class="signals">
+      <section>
+        <h3>
+          Фазные токи <span class="key" style="--c: #168b79">A</span
+          ><span class="key" style="--c: #cd8136">B</span
+          ><span class="key" style="--c: #7965bd">C</span>
+          <em>{{ fmt(now?.ia, 1) }} A</em>
+        </h3>
+        <canvas ref="phases" />
+      </section>
+      <section>
+        <h3>
+          dq <span class="key" style="--c: #168b79">Iq</span
+          ><span class="key" style="--c: #7965bd">Id</span>
+          <span v-if="currentMode" class="key dashed">задание Iq</span>
+          <em>{{ fmt(now?.iq, 1) }} A</em>
+        </h3>
+        <canvas ref="dq" />
+      </section>
+      <section>
+        <h3>
+          Скорость <span class="key" style="--c: #426a9c">факт</span
+          ><span v-if="!currentMode" class="key dashed">задание</span>
+          <em>{{ fmt(now?.rpm) }} rpm</em>
+        </h3>
+        <canvas ref="speed" />
+      </section>
+      <p class="window">{{ fmt(CHART_WINDOW_S, 1) }} с модельного времени</p>
+    </div>
   </div>
 </template>
 
 <style scoped>
 .lab {
-  --ink: #1d2730;
-  --muted: #6d7b87;
-  --line: #dde4ea;
-  --panel: #f6f8fa;
-  --accent: #e07b2c;
+  --ink: #152b40;
+  --muted: #50697f;
+  --line: #cbdbe8;
+  --accent: #1569a1;
   position: absolute;
   inset: 0;
-  display: grid;
-  grid-template-rows: auto 1fr auto;
-  gap: 8px;
-  padding: 14px 18px 12px;
+  overflow: hidden;
+  pointer-events: none;
   color: var(--ink);
-  background: linear-gradient(180deg, #fbfcfd, #eef2f5);
-  font-size: 12px;
+  font-family: "Inter", system-ui, sans-serif;
   line-height: 1.2;
 }
+.lab::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse at 32% 45%, #fbfdff, #e9f1f8);
+  opacity: 0;
+  transition: opacity 500ms;
+}
+.lab.demo::before {
+  opacity: 1;
+}
 header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
+  position: absolute;
+  top: 24px;
+  left: 32px;
 }
-.title {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  font-size: 15px;
+header h1 {
+  margin: 0;
+  font-size: 33px;
+  font-weight: 650;
+  letter-spacing: -0.04em;
 }
-.chip {
-  padding: 2px 7px;
-  border: 1px solid var(--line);
-  border-radius: 99px;
+header p {
+  margin: 5px 0 0;
   color: var(--muted);
-  font-size: 11px;
-  font-family: ui-monospace, monospace;
-}
-.status {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-  color: var(--muted);
-  font-family: ui-monospace, monospace;
-}
-.status i {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #2aa876;
-}
-.status.warn i {
-  background: var(--accent);
-}
-.stage {
-  position: relative;
-  display: grid;
-  grid-template-columns: 1fr 350px;
-  gap: 10px;
-  min-height: 0;
+  font-size: 16px;
 }
 .viewport {
-  position: relative;
-  min-height: 0;
-  border-radius: 10px;
-  overflow: hidden;
+  position: absolute;
+  top: 8%;
+  left: 51%;
+  width: 47%;
+  height: 84%;
+  opacity: 0.62;
+  transition:
+    left 620ms cubic-bezier(0.22, 1, 0.36, 1),
+    top 620ms cubic-bezier(0.22, 1, 0.36, 1),
+    width 620ms cubic-bezier(0.22, 1, 0.36, 1),
+    height 620ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 480ms ease;
+}
+.demo .viewport {
+  top: 13%;
+  left: 7%;
+  width: 86%;
+  height: 84%;
+  opacity: 1;
+}
+.show-charts .viewport {
+  left: 2%;
+  width: 61%;
+}
+@media (prefers-reduced-motion: reduce) {
+  .lab::before,
+  .viewport {
+    transition: none;
+  }
 }
 .viewport :deep(canvas) {
   display: block;
@@ -438,8 +482,8 @@ header {
 }
 .dial {
   position: absolute;
-  left: 6px;
-  bottom: 4px;
+  left: 28px;
+  bottom: 20px;
   display: flex;
   gap: 8px;
   align-items: center;
@@ -493,12 +537,10 @@ header {
 .err {
   color: var(--muted);
 }
-.view-toggle {
-  position: absolute;
-  top: 4px;
-  left: 6px;
-}
 .signals {
+  position: absolute;
+  inset: 95px 28px 22px auto;
+  width: 33%;
   display: grid;
   grid-template-rows: 1fr 1fr 1fr auto;
   gap: 6px;
@@ -558,6 +600,7 @@ footer {
   display: flex;
   gap: 10px;
   align-items: center;
+  min-height: 56px;
 }
 button,
 select {
@@ -581,7 +624,11 @@ button.icon {
 .slider {
   display: grid;
   flex: 1;
-  gap: 2px;
+  min-width: 0;
+  height: auto;
+  gap: 6px;
+  padding: 6px 10px;
+  overflow: visible;
   color: var(--muted);
 }
 .slider span {
@@ -593,8 +640,47 @@ button.icon {
   font-family: ui-monospace, monospace;
 }
 .slider input {
+  appearance: none;
+  display: block;
   width: 100%;
-  accent-color: var(--ink);
+  height: 20px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.slider input::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: #aab7c2;
+}
+.slider input::-webkit-slider-thumb {
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin-top: -6px;
+  border: 2px solid white;
+  border-radius: 50%;
+  background: var(--ink);
+  box-shadow: 0 0 0 1px var(--line);
+}
+.slider input::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: #aab7c2;
+}
+.slider input::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border: 2px solid white;
+  border-radius: 50%;
+  background: var(--ink);
+  box-shadow: 0 0 0 1px var(--line);
+}
+.slider input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .segmented {
   display: flex;

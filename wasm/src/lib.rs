@@ -44,6 +44,11 @@ impl FocSim {
         self.sim.set_target_rpm(rpm);
     }
 
+    #[wasm_bindgen(js_name = setTargetIq)]
+    pub fn set_target_iq(&mut self, amps: f32) {
+        self.sim.set_target_iq(amps);
+    }
+
     #[wasm_bindgen(js_name = setLoad)]
     pub fn set_load(&mut self, load_nm: f32) {
         self.sim.set_load(load_nm);
@@ -60,15 +65,19 @@ impl FocSim {
     }
 
     /// Run `steps` FOC periods (at most one model second per call), recording
-    /// every `decimate`-th one. Returns `Sample::FIELDS` values per sample.
+    /// every `decimate`-th one on the simulation's step grid. Returns
+    /// `Sample::FIELDS` values per sample.
     pub fn advance(&mut self, steps: u32, decimate: u32) -> Float64Array {
         let decimate = decimate.max(1);
         self.buf.clear();
         // A negative JS count arrives wrapped to ~4e9 — never trust it.
-        for i in 1..=steps.min(sim::FOC_HZ) {
+        let steps = steps.min(sim::FOC_HZ);
+        let mut next_sample = decimate - (self.sim.step_count() % u64::from(decimate)) as u32;
+        for step in 1..=steps {
             self.sim.step();
-            if i % decimate == 0 {
+            if step == next_sample {
                 self.sim.sample().write(&mut self.buf);
+                next_sample = next_sample.saturating_add(decimate);
             }
         }
         Float64Array::from(self.buf.as_slice())

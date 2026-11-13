@@ -13,7 +13,11 @@ fn wrap(a: f32) -> f32 {
 
 fn main() {
     let sensorless = env::args().any(|a| a == "sensorless");
-    let source = if sensorless { AngleSource::Sensorless } else { AngleSource::Hall };
+    let source = if sensorless {
+        AngleSource::Sensorless
+    } else {
+        AngleSource::Hall
+    };
     let mut sim = Sim::new(flipsky_5065(), source);
     sim.set_target_rpm(1500.0);
     for _ in 0..60_000 {
